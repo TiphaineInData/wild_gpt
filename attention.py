@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch
 import math
-from .layers import RMSNorm, RotaryEmbedding, apply_rope
+from layers import RMSNorm, RotaryEmbedding, apply_rope
 import torch.nn.functional as F
 
 class MultiHeadLatentAttention(nn.Module):
