@@ -1,5 +1,5 @@
 import torch.nn as nn
-from .layers import SwiGLU
+from layers import SwiGLU
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
