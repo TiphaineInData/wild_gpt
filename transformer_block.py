@@ -1,7 +1,7 @@
 import torch.nn as nn
-from .layers import RMSNorm
-from .attention import MultiHeadLatentAttention
-from .moe import MOELayer
+from layers import RMSNorm
+from attention import MultiHeadLatentAttention
+from moe import MOELayer
 
 class WildBlock(nn.Module):
     def __init__(self, config):
