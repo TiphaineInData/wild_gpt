@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-from .transformer_block import WildBlock
-from .layers import RMSNorm
-from .mtp import MultiTokenPredictionHead
+from transformer_block import WildBlock
+from layers import RMSNorm
+from mtp import MultiTokenPredictionHead
 
 class Wild_GPT(nn.Module):
     def __init__(self, config):
