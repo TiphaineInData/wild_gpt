@@ -5,9 +5,9 @@ import wandb
 import time
 from tqdm.auto import tqdm
 from contextlib import nullcontext
-from .config import Wild_GPT_config
-from .model import Wild_GPT
-from .data_loader import get_batch, estimate_loss
+from config import Wild_GPT_config
+from model import Wild_GPT
+from data_loader import get_batch, estimate_loss
 from dotenv import load_dotenv
 
 # Load environment variables
