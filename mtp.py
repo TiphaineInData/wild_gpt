@@ -3,7 +3,6 @@ from layers import RMSNorm
 from attention import MultiHeadLatentAttention
 from moe import MOELayer
 import torch
-import torch.nn as nn
 
 
 """
@@ -46,11 +45,6 @@ import torch.nn as nn
     hidden : torch.Tensor de forme (batch_size, seq_len, n_embd)
         Représentation enrichie combinant contexte passé et cible supervisée, prête pour la prédiction finale.
 """
-import torch
-import torch.nn as nn
-from .layers import RMSNorm
-from .attention import MultiHeadLatentAttention
-from .moe import MOELayer
 
 class MultiTokenPredictionHead(nn.Module):
     def __init__(self, config, depth):
@@ -103,4 +97,5 @@ class MultiTokenPredictionHead(nn.Module):
         hidden = hidden + self.mlp(self.mlp_norm(hidden))
 
         return hidden
+
 
