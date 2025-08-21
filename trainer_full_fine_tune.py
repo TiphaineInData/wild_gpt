@@ -16,6 +16,37 @@ load_dotenv()
 def compute_perplexity(loss: float) -> float:
     return math.exp(loss) if loss is not None and loss < 100 else float("inf")
 
+def run_evaluation(model, config, step, eval_iters, batch_size, device_type, device, ctx, epoch=None):
+    """Effectue une évaluation et logge sur wandb."""
+    losses = estimate_loss(model, config, eval_iters, batch_size, device_type, device, ctx)
+    train_loss = losses['train']
+    val_loss = losses['val']
+    train_ppl = compute_perplexity(train_loss)
+    val_ppl = compute_perplexity(val_loss)
+
+    if epoch is not None:
+        print(f"\n📊 EVAL Epoch {epoch}: train {train_loss:.4f} (PPL {train_ppl:.2f}), "
+              f"val {val_loss:.4f} (PPL {val_ppl:.2f})")
+        wandb.log({
+            "epoch": epoch,
+            "val_loss": val_loss,
+            "train_loss_eval": train_loss,
+            "val_perplexity": val_ppl,
+            "train_perplexity": train_ppl
+        })
+    else:
+        print(f"📊 EVAL Step {step}: train {train_loss:.4f} (PPL {train_ppl:.2f}), "
+              f"val {val_loss:.4f} (PPL {val_ppl:.2f})")
+        wandb.log({
+            "step": step,
+            "val_loss": val_loss,
+            "train_loss_eval": train_loss,
+            "val_perplexity": val_ppl,
+            "train_perplexity": train_ppl
+        })
+
+    return val_loss, val_ppl
+
 def train_full_finetune():
     config = Wild_GPT_config(
         vocab_size=50257,
@@ -41,6 +72,7 @@ def train_full_finetune():
     batch_size = 32
     gradient_accumulation_steps = 8
     weight_decay = 0.15
+    max_epochs = 5  # ⚠️ Nouveau : découpage en epochs
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device_type = 'cuda' if 'cuda' in device else 'cpu'
@@ -55,7 +87,6 @@ def train_full_finetune():
     print("🔄 Initialisation du modèle...")
     model = Wild_GPT(config).to(device)
 
-    # Charger les poids du modèle V2
     pretrained_path = "Wild_GPT_v2.pt"
     if os.path.exists(pretrained_path):
         print(f"🚀 Chargement des poids depuis {pretrained_path}")
@@ -66,7 +97,6 @@ def train_full_finetune():
         print(f"❌ ERREUR: {pretrained_path} introuvable !")
         exit(1)
 
-    # Vérif des paramètres entraînables
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"🔥 FULL FINE-TUNING activé !")
@@ -79,7 +109,6 @@ def train_full_finetune():
         "trainable_percentage": 100.0
     })
 
-    # Optimiseur neuf (⚠️ pas de reprise optimizer de v2)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
@@ -87,7 +116,6 @@ def train_full_finetune():
         weight_decay=weight_decay,
         eps=1e-9
     )
-
     scaler = torch.amp.GradScaler(enabled=(dtype == 'float16'))
 
     model.train()
@@ -95,104 +123,78 @@ def train_full_finetune():
 
     os.makedirs("finetune_models", exist_ok=True)
     best_model_path = "finetune_models/Wild_GPT_finetune_best.pt"
-    best_optimizer_path = "finetune_models/Wild_GPT_finetune_optimizer_best.pt"
     log_file = "finetune_models/training_log.txt"
-
-    last_backup_time = time.time()
-    backup_interval = 7200  # 2h
 
     print("🚀 Début du FULL fine-tuning...")
 
-    for step in tqdm(range(max_iters), desc="Full Fine-tuning",
-                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"):
+    steps_per_epoch = max_iters // max_epochs
+    global_step = 0
 
-        X, y = get_batch("train", config, batch_size, device_type, device)
+    for epoch in range(1, max_epochs + 1):
+        for step in tqdm(range(steps_per_epoch), desc=f"Epoch {epoch}/{max_epochs}"):
+            X, y = get_batch("train", config, batch_size, device_type, device)
 
-        with ctx:
-            logits, total_loss, main_loss, mtp_loss = model(X, y)
+            with ctx:
+                logits, total_loss, main_loss, mtp_loss = model(X, y)
+                loss = total_loss / gradient_accumulation_steps
+                scaler.scale(loss).backward()
 
-            if total_loss is None:
-                print("🚨 ERREUR: total_loss est None !")
-                exit(1)
+            if (step + 1) % gradient_accumulation_steps == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
 
-            loss = total_loss / gradient_accumulation_steps
-            scaler.scale(loss).backward()
+            # Scheduler cosine
+            if global_step < warmup_steps:
+                lr = learning_rate * (global_step + 1) / warmup_steps
+            else:
+                progress = (global_step - warmup_steps) / (max_iters - warmup_steps)
+                lr = min_lr + (learning_rate - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
 
-        if (step + 1) % gradient_accumulation_steps == 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad(set_to_none=True)
-
-        # Scheduler cosine
-        if step < warmup_steps:
-            lr = learning_rate * (step + 1) / warmup_steps
-        else:
-            progress = (step - warmup_steps) / (max_iters - warmup_steps)
-            lr = min_lr + (learning_rate - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
-
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-
-        current_loss = total_loss.item()
-        wandb.log({
-            "step": step,
-            "total_loss": current_loss,
-            "main_loss": main_loss.item(),
-            "mtp_loss": mtp_loss.item() if mtp_loss else 0.0,
-            "learning_rate": lr,
-            "perplexity": compute_perplexity(current_loss)
-        })
-
-        if step % 50 == 0:
-            ppl = compute_perplexity(current_loss)
-            print(f"Step {step}: loss={current_loss:.4f}, lr={lr:.2e}, ppl={ppl:.1f}")
-
-        # Backup auto toutes les 2h
-        if time.time() - last_backup_time > backup_interval:
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            torch.save(model.state_dict(), f"finetune_models/Wild_GPT_finetune_backup_{timestamp}.pt")
-            torch.save(optimizer.state_dict(), f"finetune_models/Wild_GPT_finetune_optimizer_backup_{timestamp}.pt")
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"📦 Backup auto à {timestamp} (step {step})\n")
-            print(f"💾 Backup automatique sauvé: {timestamp}")
-            last_backup_time = time.time()
-
-        # Évaluation
-        if step % eval_interval == 0 and step > 0:
-            losses = estimate_loss(model, config, eval_iters, batch_size, device_type, device, ctx)
-            train_loss = losses['train']
-            val_loss = losses['val']
-
-            train_perplexity = compute_perplexity(train_loss)
-            val_perplexity = compute_perplexity(val_loss)
-
-            print(f"📊 EVAL Step {step}: train {train_loss:.4f} (PPL {train_perplexity:.2f}), "
-                  f"val {val_loss:.4f} (PPL {val_perplexity:.2f})")
-
+            current_loss = total_loss.item()
             wandb.log({
-                "val_loss": val_loss,
-                "train_loss_eval": train_loss,
-                "val_perplexity": val_perplexity,
-                "train_perplexity": train_perplexity
+                "step": global_step,
+                "epoch": epoch,
+                "total_loss": current_loss,
+                "main_loss": main_loss.item(),
+                "mtp_loss": mtp_loss.item() if mtp_loss else 0.0,
+                "learning_rate": lr,
+                "perplexity": compute_perplexity(current_loss)
             })
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                torch.save(model.state_dict(), best_model_path)
-                torch.save(optimizer.state_dict(), best_optimizer_path)
-                print(f"🏆 NOUVEAU RECORD ! Val loss: {val_loss:.4f} (PPL: {val_perplexity:.1f})")
-                wandb.log({"best_val_loss": best_val_loss})
+            if global_step % 50 == 0:
+                ppl = compute_perplexity(current_loss)
+                print(f"Step {global_step}: loss={current_loss:.4f}, lr={lr:.2e}, ppl={ppl:.1f}")
+
+            # 🔍 Évaluation régulière
+            if global_step % eval_interval == 0 and global_step > 0:
+                val_loss, val_ppl = run_evaluation(model, config, global_step,
+                                                   eval_iters, batch_size, device_type, device, ctx)
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    torch.save(model.state_dict(), best_model_path)
+                    print(f"🏆 NOUVEAU RECORD ! Val loss: {val_loss:.4f} (PPL: {val_ppl:.1f})")
+                    wandb.log({"best_val_loss": best_val_loss})
+
+            global_step += 1
+
+        # 📊 Évaluation fin d’epoch
+        val_loss, val_ppl = run_evaluation(model, config, global_step,
+                                           eval_iters, batch_size, device_type, device, ctx, epoch=epoch)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), best_model_path)
+            print(f"🏆 [Epoch {epoch}] NOUVEAU RECORD ! Val loss: {val_loss:.4f} (PPL: {val_ppl:.1f})")
+            wandb.log({"best_val_loss": best_val_loss})
 
     # Sauvegarde finale
     torch.save(model.state_dict(), "finetune_models/Wild_GPT_finetune_final.pt")
-    torch.save(optimizer.state_dict(), "finetune_models/Wild_GPT_finetune_optimizer_final.pt")
     torch.save(model, "finetune_models/Wild_GPT_finetune_complete_final.pt")
-
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write("🎉 Fine-tuning terminé !\n")
-
     wandb.finish()
     print("🎉 Full fine-tuning terminé !")
     print(f"🏆 Meilleure val loss: {best_val_loss:.4f}")
