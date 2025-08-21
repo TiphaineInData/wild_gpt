@@ -18,7 +18,7 @@ def get_batch(split, config, batch_size, device_type, device):
         raise ValueError(f"Split '{split}' non reconnu. Utilisez 'train' ou 'val'.")
     
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Fichier {path} non trouvé. Avez-vous lancé data_prep_finetune.py ?")
+        raise FileNotFoundError(f"Fichier {path} non trouvé. Avez-vous lancé le setup avec gdown ?")
 
     data = np.memmap(path, dtype=np.uint16, mode='r')
     block_size = config.block_size
@@ -60,7 +60,7 @@ def get_batch(split, config, batch_size, device_type, device):
 @torch.no_grad()
 def estimate_loss(model, config, eval_iters, batch_size, device_type, device, ctx):
     """
-    Estimation de la loss pour PEFT/LoRA models
+    🔥 CORRECTION: Estimation loss pour Wild_GPT (pas HuggingFace)
     """
     model.eval()
     out = {}
@@ -72,9 +72,9 @@ def estimate_loss(model, config, eval_iters, batch_size, device_type, device, ct
             X, Y = get_batch(split, config, batch_size, device_type, device)
 
             with ctx:
-                # Pour PEFT, on utilise l'API standard
-                outputs = model(input_ids=X, labels=Y)
-                losses[k] = outputs.loss.item()
+                # ✅ CORRECT: API Wild_GPT custom
+                logits, total_loss, main_loss, mtp_loss = model(X, Y)
+                losses[k] = total_loss.item()
 
         out[split] = losses.mean()
 
