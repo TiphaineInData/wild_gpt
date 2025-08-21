@@ -2,6 +2,8 @@ import torch.nn as nn
 from layers import RMSNorm
 from attention import MultiHeadLatentAttention
 from moe import MOELayer
+import torch
+import torch.nn as nn
 
 
 """
@@ -101,3 +103,4 @@ class MultiTokenPredictionHead(nn.Module):
         hidden = hidden + self.mlp(self.mlp_norm(hidden))
 
         return hidden
+
