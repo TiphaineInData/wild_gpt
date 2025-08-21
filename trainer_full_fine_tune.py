@@ -6,7 +6,7 @@ import time
 from tqdm.auto import tqdm
 from contextlib import nullcontext
 from config import Wild_GPT_config
-from model import Wild_GPT   # ✅ importer la classe du modèle
+from model import Wild_GPT   # ✅ Classe définie dans model.py
 from data_loader_fine_tune import get_batch, estimate_loss
 from dotenv import load_dotenv
 
@@ -28,7 +28,7 @@ def train_full_finetune():
         n_experts=8,
         n_experts_per_token=2,
         mtp_num_heads=1,
-        dropout=0.10   # FT → un peu moins de régularisation
+        dropout=0.10
     )
 
     # Hyperparamètres full fine-tuning
@@ -39,7 +39,7 @@ def train_full_finetune():
     eval_interval = 1800
     eval_iters = 250
     batch_size = 32
-    gradient_accumulation_steps = 8  # batch effectif = 256
+    gradient_accumulation_steps = 8
     weight_decay = 0.15
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -51,21 +51,22 @@ def train_full_finetune():
     wandb.init(project="wild_gpt_full_finetune", config=config.__dict__)
     torch.manual_seed(42)
 
-    # Charger le modèle
+    # 🔄 Charger le modèle
     print("🔄 Initialisation du modèle...")
     model = Wild_GPT(config).to(device)
 
-    # Charger les poids du modèle pré-entraîné (Wild_GPT_v2.pt)
-    pretrained_path = "./Wild_GPT_v2.pt"
+    # Charger les poids du modèle V2
+    pretrained_path = "Wild_GPT_v2.pt"
     if os.path.exists(pretrained_path):
+        print(f"🚀 Chargement des poids depuis {pretrained_path}")
         state_dict = torch.load(pretrained_path, map_location=device)
         model.load_state_dict(state_dict, strict=False)
-        print(f"✅ Poids Wild_GPT_v2 chargés depuis {pretrained_path}")
+        print("✅ Poids V2 chargés avec succès !")
     else:
-        print(f"🚨 ERREUR: Fichier {pretrained_path} non trouvé !")
+        print(f"❌ ERREUR: {pretrained_path} introuvable !")
         exit(1)
 
-    # Tous les paramètres sont entraînables
+    # Vérif des paramètres entraînables
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"🔥 FULL FINE-TUNING activé !")
@@ -78,7 +79,7 @@ def train_full_finetune():
         "trainable_percentage": 100.0
     })
 
-    # Optimiseur
+    # Optimiseur neuf (⚠️ pas de reprise optimizer de v2)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
@@ -92,11 +93,10 @@ def train_full_finetune():
     model.train()
     best_val_loss = float('inf')
 
-    # Chemins de sauvegarde
     os.makedirs("finetune_models", exist_ok=True)
-    best_model_path = "./finetune_models/Wild_GPT_finetune_best.pt"
-    best_optimizer_path = "./finetune_models/Wild_GPT_finetune_optimizer_best.pt"
-    log_file = "./finetune_models/training_log.txt"
+    best_model_path = "finetune_models/Wild_GPT_finetune_best.pt"
+    best_optimizer_path = "finetune_models/Wild_GPT_finetune_optimizer_best.pt"
+    log_file = "finetune_models/training_log.txt"
 
     last_backup_time = time.time()
     backup_interval = 7200  # 2h
@@ -106,7 +106,6 @@ def train_full_finetune():
     for step in tqdm(range(max_iters), desc="Full Fine-tuning",
                      bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"):
 
-        # Récupérer un batch
         X, y = get_batch("train", config, batch_size, device_type, device)
 
         with ctx:
@@ -150,11 +149,11 @@ def train_full_finetune():
             ppl = compute_perplexity(current_loss)
             print(f"Step {step}: loss={current_loss:.4f}, lr={lr:.2e}, ppl={ppl:.1f}")
 
-        # 💾 Backup auto toutes les 2h
+        # Backup auto toutes les 2h
         if time.time() - last_backup_time > backup_interval:
             timestamp = time.strftime("%Y%m%d-%H%M%S")
-            torch.save(model.state_dict(), f"./finetune_models/Wild_GPT_finetune_backup_{timestamp}.pt")
-            torch.save(optimizer.state_dict(), f"./finetune_models/Wild_GPT_finetune_optimizer_backup_{timestamp}.pt")
+            torch.save(model.state_dict(), f"finetune_models/Wild_GPT_finetune_backup_{timestamp}.pt")
+            torch.save(optimizer.state_dict(), f"finetune_models/Wild_GPT_finetune_optimizer_backup_{timestamp}.pt")
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"📦 Backup auto à {timestamp} (step {step})\n")
             print(f"💾 Backup automatique sauvé: {timestamp}")
@@ -183,37 +182,16 @@ def train_full_finetune():
                 best_val_loss = val_loss
                 torch.save(model.state_dict(), best_model_path)
                 torch.save(optimizer.state_dict(), best_optimizer_path)
-
-                # sauvegarde supplémentaire instruct
-                instruct_best = "./finetune_models/best_wild_gpt_v_instruct.pt"
-                torch.save(model.state_dict(), instruct_best)
-
-                with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"🏆 Nouveau record à step {step}: val_loss {val_loss:.4f}, "
-                            f"PPL {val_perplexity:.2f}\n")
-                    f.write(f"➡️ Best checkpoint: {instruct_best}\n")
-
                 print(f"🏆 NOUVEAU RECORD ! Val loss: {val_loss:.4f} (PPL: {val_perplexity:.1f})")
                 wandb.log({"best_val_loss": best_val_loss})
 
     # Sauvegarde finale
-    final_model = "./finetune_models/Wild_GPT_finetune_final.pt"
-    final_opt = "./finetune_models/Wild_GPT_finetune_optimizer_final.pt"
-    final_complete = "./finetune_models/Wild_GPT_finetune_complete_final.pt"
-    final_instruct = "./finetune_models/wild_gpt_v_instruct_final.pt"
-
-    torch.save(model.state_dict(), final_model)
-    torch.save(optimizer.state_dict(), final_opt)
-    torch.save(model, final_complete)
-    torch.save(model.state_dict(), final_instruct)
+    torch.save(model.state_dict(), "finetune_models/Wild_GPT_finetune_final.pt")
+    torch.save(optimizer.state_dict(), "finetune_models/Wild_GPT_finetune_optimizer_final.pt")
+    torch.save(model, "finetune_models/Wild_GPT_finetune_complete_final.pt")
 
     with open(log_file, "a", encoding="utf-8") as f:
         f.write("🎉 Fine-tuning terminé !\n")
-        f.write(f"📦 Final checkpoints:\n")
-        f.write(f"  - {final_model}\n")
-        f.write(f"  - {final_opt}\n")
-        f.write(f"  - {final_complete}\n")
-        f.write(f"  - {final_instruct}\n")
 
     wandb.finish()
     print("🎉 Full fine-tuning terminé !")
